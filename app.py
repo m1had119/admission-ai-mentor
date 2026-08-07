@@ -5,8 +5,8 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGener
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-# HARDCODED API KEY (Permanently Inserted)
-API_KEY = "AQ.Ab8RN6IKYHNMyS6eJtQrYjF-dScM6QoOnAKe73GUa6SIncyu4g"
+# Retrieve API Key safely from Streamlit Secrets
+API_KEY = st.secrets["GEMINI_API_KEY"]
 
 # Page Configuration
 st.set_page_config(page_title="Admission AI Mentor", page_icon="🎓", layout="wide")
@@ -67,4 +67,3 @@ if user_prompt:
             st.markdown(response)
 
     st.session_state.chat_history.append({"role": "assistant", "content": response})
-    
