@@ -1,4 +1,5 @@
 import os
+import time
 import streamlit as st
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -18,8 +19,8 @@ with st.sidebar:
     st.header("⚙️ Settings & Knowledge Base")
     api_key = st.text_input("Enter Gemini API Key:", type="password")
     
-    st.subheader("📚 PDF Question Banks / Books (Optional)")
-    uploaded_files = st.file_uploader("Upload PDFs if you have specific books", type=["pdf"], accept_multiple_files=True)
+    st.subheader("📚 PDF Question Banks / Books")
+    uploaded_files = st.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True)
     
     process_btn = st.button("Process & Load PDF Knowledge Base")
 
@@ -39,32 +40,58 @@ def load_system_prompt():
 
 system_instructions = load_system_prompt()
 
-# Process PDFs Safely
+# Process Massive PDFs in Batches safely
 if process_btn and uploaded_files:
     if not api_key:
         st.error("Please enter a valid Gemini API Key first!")
     else:
-        with st.spinner("Extracting & Indexing PDFs... Please wait"):
-            all_text = ""
-            for pdf in uploaded_files:
-                try:
-                    reader = PdfReader(pdf)
-                    for page in reader.pages:
-                        text = page.extract_text()
-                        if text:
-                            all_text += text + "\n"
-                except Exception as e:
-                    st.warning(f"Could not read {pdf.name}. Skipped corrupted or encrypted pages.")
+        status_box = st.empty()
+        progress_bar = st.progress(0)
+        
+        all_text = ""
+        total_files = len(uploaded_files)
+        
+        for idx, pdf in enumerate(uploaded_files):
+            status_box.text(f"Extracting text from PDF {idx+1}/{total_files}: {pdf.name}")
+            try:
+                reader = PdfReader(pdf)
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        all_text += text + "\n"
+            except Exception as e:
+                st.warning(f"Skipped corrupted/encrypted file: {pdf.name}")
             
-            if all_text.strip():
-                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-                chunks = text_splitter.split_text(all_text)
+            progress_bar.progress((idx + 1) / total_files)
+
+        if all_text.strip():
+            status_box.text("Splitting text into chunks...")
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+            chunks = text_splitter.split_text(all_text)
+            
+            status_box.text(f"Generating Vector Embeddings for {len(chunks)} text chunks in batches...")
+            embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key)
+            
+            # Batching to avoid Rate Limit error
+            batch_size = 50
+            vector_store = None
+            
+            chunk_progress = st.progress(0)
+            for i in range(0, len(chunks), batch_size):
+                batch_chunks = chunks[i:i + batch_size]
+                if vector_store is None:
+                    vector_store = FAISS.from_texts(batch_chunks, embedding=embeddings)
+                else:
+                    vector_store.add_texts(batch_chunks)
                 
-                embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key)
-                st.session_state.vector_store = FAISS.from_texts(chunks, embedding=embeddings)
-                st.success("✅ PDF Knowledge Base Successfully Created!")
-            else:
-                st.error("❌ No readable text found in uploaded PDFs!")
+                chunk_progress.progress(min((i + batch_size) / len(chunks), 1.0))
+                time.sleep(1)  # 1 second delay to respect API quota limits
+            
+            st.session_state.vector_store = vector_store
+            status_box.empty()
+            st.success("✅ All PDF Knowledge Base Successfully Processed & Indexed!")
+        else:
+            st.error("❌ No readable text found in uploaded PDFs!")
 
 # Render Chat Interface
 for message in st.session_state.chat_history:
@@ -84,7 +111,7 @@ if user_prompt:
         # Context Retrieval
         retrieved_context = "No PDF context uploaded. Use internal online database of BUET, DU, IUT, CKRUET, and GST question patterns."
         if st.session_state.vector_store:
-            docs = st.session_state.vector_store.similarity_search(user_prompt, k=3)
+            docs = st.session_state.vector_store.similarity_search(user_prompt, k=4)
             retrieved_context = "\n\n".join([d.page_content for d in docs])
 
         # Formulate Final Hybrid Prompt
@@ -104,3 +131,4 @@ if user_prompt:
                 st.markdown(response)
 
         st.session_state.chat_history.append({"role": "assistant", "content": response})
+        
